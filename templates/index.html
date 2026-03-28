@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>HotspotAI — Driver Intelligence</title>
+
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<!-- App CSS -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=2"/>
+<script src="{{ url_for('static', filename='js/script.js') }}?v=2"></script>
+</head>
+
+<body>
+
+<!-- ══════════════ TOPBAR ══════════════ -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">H</div>
+    <span class="logo-text">Hotspot<span>AI</span></span>
+    <span class="badge">NYC · LIVE</span>
+  </div>
+  <span class="clock" id="clock">--:--:--</span>
+  <div id="status-chip">IDLE</div>
+</header>
+
+<!-- ══════════════ MAIN LAYOUT ══════════════ -->
+<main>
+
+  <!-- ══ LEFT PANEL ══ -->
+  <aside>
+
+    <!-- INPUT CARD -->
+    <div class="card card-accent-top">
+      <div class="section-label">Driver Input</div>
+
+      <!-- Location -->
+      <div style="margin-bottom:14px">
+        <label>Current Location</label>
+        <div class="input-wrap">
+          <span class="input-icon">📍</span>
+          <input id="location" type="text" placeholder="Times Square, Brooklyn, JFK…" autocomplete="off"/>
+        </div>
+      </div>
+
+      <!-- Hour slider -->
+      <div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <label style="margin:0">Hour of Day</label>
+          <span class="range-val" id="hour-val">18:00</span>
+        </div>
+        <div class="range-wrap">
+          <input type="range" id="hour" min="0" max="23" value="18"/>
+          <div class="range-labels">
+            <span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>11 PM</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Day + Month -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        <div>
+          <label>Day</label>
+          <select id="weekday">
+            <option value="0">Monday</option>
+            <option value="1">Tuesday</option>
+            <option value="2">Wednesday</option>
+            <option value="3">Thursday</option>
+            <option value="4" selected>Friday</option>
+            <option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+        </div>
+        <div>
+          <label>Month</label>
+          <select id="month">
+            <option value="4" selected>April</option>
+            <option value="5">May</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Scan button -->
+      <button id="scan-btn">
+        <span id="btn-icon">⬡</span>
+        <span id="btn-text">Scan Hotspots</span>
+      </button>
+    </div>
+
+    <!-- ══ RESULT CARDS (hidden until scan) ══ -->
+    <div id="results" style="display:none;flex-direction:column;gap:12px">
+
+      <!-- Your Zone -->
+      <div class="card fade-up">
+        <div class="section-label">Your Zone</div>
+        <p id="res-zone" style="font-size:15px;font-weight:700;color:var(--text)">—</p>
+        <div class="stat-row">
+          <span class="stat-label">Expected Rides</span>
+          <span class="stat-val" id="res-rides" style="color:var(--blue)">—</span>
+        </div>
+      </div>
+
+      <!-- Surge -->
+      <div class="card card-accent-amber fade-up" id="surge-card">
+        <div class="section-label">Surge Multiplier</div>
+        <div style="display:flex;align-items:flex-end;gap:6px">
+          <span class="surge-big" id="res-surge">—</span>
+          <span style="font-family:'DM Mono',monospace;font-size:20px;color:var(--text3);margin-bottom:6px">×</span>
+          <span class="badge-pill" id="res-level" style="margin-left:auto;margin-bottom:8px">—</span>
+        </div>
+        <div class="surge-bar-bg">
+          <div class="surge-fill" id="surge-bar"></div>
+        </div>
+        <div class="surge-ticks">
+          <span>1.0×</span><span>1.5×</span><span>2.0×</span><span>2.5×</span>
+        </div>
+      </div>
+
+      <!-- Best Hotspot -->
+      <div class="card card-accent-green fade-up">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div class="section-label" style="margin:0">Best Hotspot</div>
+          <span class="badge-pill" style="background:#dcfce7;color:#15803d;border:1px solid #86efac">★ TOP</span>
+        </div>
+        <p id="res-hotspot" style="font-size:15px;font-weight:700;color:var(--text)">—</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+          <div>
+            <p style="font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:500">Distance</p>
+            <p style="font-family:'DM Mono',monospace;font-size:14px;font-weight:600;color:var(--green)">
+              <span id="res-dist">—</span> km
+            </p>
+          </div>
+          <div>
+            <p style="font-size:11px;color:var(--text2);margin-bottom:4px;font-weight:500">Expected Rides</p>
+            <p style="font-family:'DM Mono',monospace;font-size:14px;font-weight:600;color:var(--green)" id="res-hriders">—</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ══ ZONE TABLE ══ -->
+    <div id="table-section" style="display:none" class="card fade-up">
+      <div class="section-label">All Zones Ranked</div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Zone</th>
+            <th>Rides</th>
+            <th>Dist</th>
+          </tr>
+        </thead>
+        <tbody id="zone-tbody"></tbody>
+      </table>
+    </div>
+
+  </aside>
+
+  <!-- ══ MAP PANEL ══ -->
+  <section class="map-section" style="position:relative">
+
+    <div class="map-header">
+      <div class="map-header-left">
+        <div class="map-dots"><span></span><span></span><span></span></div>
+        <span style="font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--text3)">LIVE MAP</span>
+      </div>
+      <span id="map-hint" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)">
+        Enter location to begin scanning
+      </span>
+    </div>
+
+    <div id="map" style="flex:1;width:100%;min-height:0"></div>
+
+    <div class="map-legend">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#2563eb;box-shadow:0 0 5px #2563eb66"></div>You
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#16a34a;box-shadow:0 0 5px #16a34a66"></div>Best Hotspot
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#e85d26;box-shadow:0 0 5px #e85d2666"></div>Other Zones
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<!-- Toast notification -->
+<div id="toast"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- App JS -->
+<script src="{{ url_for('static', filename='js/script.js') }}?v=2"></script>
+</body>
+</html>
