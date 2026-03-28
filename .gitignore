@@ -1,0 +1,32 @@
+# Python bytecode (the compiled stuff you saw earlier)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments (Don't upload your virtual environment!)
+venv/
+env/
+ENV/
+bin/
+lib/
+include/
+
+# Secrets and Config
+.env
+instance/
+.flaskenv
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Large Model Files (Optional)
+# If your .pkl files are very large (>50MB), you should ignore them 
+# and use Git LFS or download them separately. 
+# For now, I'll leave them commented out so you can push them for your project to work.
+# *.pkl
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.swp

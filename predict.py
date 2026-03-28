@@ -1,165 +1,121 @@
-"""
-HotspotAI — predict.py
-Loads trained models and exposes a single predict() function.
-"""
-
-import math
-import warnings
 import joblib
-import numpy as np
 import pandas as pd
+import math
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 
-warnings.filterwarnings("ignore")
+class UberPredictor:
+    def __init__(self):
+        # 1. Load all 5 components once during initialization
+        print("Loading ML models and lookup tables...")
+        self.kmeans = joblib.load('uber_kmeans.pkl')
+        self.model = joblib.load('uber_model.pkl')
+        self.cluster_labels = joblib.load('uber_cluster_labels.pkl')
+        self.share_table = joblib.load('uber_share_table.pkl')
+        self.surge_lookup = joblib.load('uber_surge_lookup.pkl')
+        
+        # Hardcoded from your training data analysis
+        self.avg_demand = 1530 
+        self.geolocator = Nominatim(user_agent="uber_demand_analyzer")
 
+    def haversine(self, lat1, lon1, lat2, lon2):
+        """Calculates the great-circle distance between two points in kilometers."""
+        R = 6371 # Earth radius in km
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        
+        a = math.sin(dphi/2)**2 + \
+            math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+        
+        return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-# ── Load all 5 pkl model files ──────────────────────
-kmeans         = joblib.load("uber_kmeans.pkl")
-linear_model   = joblib.load("uber_model.pkl")
-share_table    = joblib.load("uber_share_table.pkl")
-surge_lookup   = joblib.load("uber_surge_lookup.pkl")
-cluster_labels = joblib.load("uber_cluster_labels.pkl")
+    def get_coordinates(self, location_name):
+        try:
+            # We append New York City to keep results localized to your training data
+            location = self.geolocator.geocode(location_name + ", New York City")
+            if location:
+                return location.latitude, location.longitude
+            return None, None
+        except GeocoderTimedOut:
+            return None, None
 
-# Derived constant used for surge normalisation
-avg_demand = surge_lookup['total_pickups'].mean()
+    def predict(self, location_name, hour, weekday, month=4):
+        # 1. Get Lat/Lon from User Input
+        lat, lon = self.get_coordinates(location_name)
+        if lat is None:
+            return {"error": f"Could not find coordinates for '{location_name}'"}
 
-# ── Geolocator ──────────────────────────────────────
-geolocator = Nominatim(user_agent="uber_demand_predictor")
+        # 2. Identify Driver's Current Cluster
+        coords_df = pd.DataFrame([[lat, lon]], columns=['Lat', 'Lon'])
+        driver_cluster = int(self.kmeans.predict(coords_df)[0])
+        driver_zone = self.cluster_labels[driver_cluster]
 
+        # 3. Predict Total City-Wide Demand
+        features = pd.DataFrame([[hour, weekday, month]], columns=['Hour', 'Weekday', 'Month'])
+        total_predicted = self.model.predict(features)[0]
 
-# ── Helpers ─────────────────────────────────────────
-def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Return the great-circle distance (km) between two lat/lon points."""
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        # 4. Analyze All Hotspots
+        predictions = []
+        for cluster_id, zone_name in self.cluster_labels.items():
+            center_lat = self.kmeans.cluster_centers_[cluster_id][0]
+            center_lon = self.kmeans.cluster_centers_[cluster_id][1]
 
+            # Find the historical 'share' of rides for this cluster at this time
+            match = self.share_table[
+                (self.share_table['Hour'] == hour) &
+                (self.share_table['Weekday'] == weekday) &
+                (self.share_table['cluster'] == cluster_id)
+            ]
+            
+            share = float(match['share'].values[0]) if not match.empty else 0.2
+            cluster_rides = int(total_predicted * share)
+            dist = self.haversine(lat, lon, center_lat, center_lon)
 
-def get_coordinates(location_name: str):
-    """Geocode a location string to (lat, lon). Returns (None, None) on failure."""
-    try:
-        location = geolocator.geocode(location_name + ", New York City")
-        if location:
-            return location.latitude, location.longitude
-        return None, None
-    except GeocoderTimedOut:
-        return None, None
+            predictions.append({
+                'hotspot_name': zone_name,
+                'rides': max(0, cluster_rides), # Ensure no negative rides
+                'distance_km': dist
+            })
 
+        # 5. Calculate Recommendation Scores
+        pred_df = pd.DataFrame(predictions)
+        max_rides = pred_df['rides'].max() if pred_df['rides'].max() > 0 else 1
+        max_dist = pred_df['distance_km'].max() if pred_df['distance_km'].max() > 0 else 1
+        
+        # Your custom scoring formula
+        pred_df['score'] = (
+            (pred_df['rides'] / max_rides) * 0.7 -
+            (pred_df['distance_km'] / max_dist) * 0.3
+        )
 
-# ── Main prediction function ─────────────────────────
-def predict(location_name: str, hour: int, weekday: int, month: int = 4):
-    """
-    Predict ride demand and surge for the given location and time.
+        best = pred_df.sort_values('score', ascending=False).iloc[0]
+        current_zone_data = pred_df[pred_df['hotspot_name'] == driver_zone].iloc[0]
 
-    Parameters
-    ----------
-    location_name : str   e.g. "Times Square"
-    hour          : int   0–23
-    weekday       : int   0 = Monday … 6 = Sunday
-    month         : int   e.g. 4 for April
-
-    Returns
-    -------
-    dict with prediction results, or None if geocoding fails.
-    """
-    lat, lon = get_coordinates(location_name)
-    if lat is None:
-        return None
-
-    day_names  = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    hour_label = f"{hour % 12 or 12} {'AM' if hour < 12 else 'PM'}"
-    day_label  = day_names[weekday]
-
-    # Which cluster is the driver currently in?
-    driver_cluster = int(
-        kmeans.predict(pd.DataFrame([[lat, lon]], columns=['Lat', 'Lon']))[0]
-    )
-    driver_zone = cluster_labels[driver_cluster]
-
-    # Total predicted rides for this time slot
-    total_predicted = linear_model.predict(
-        pd.DataFrame([[hour, weekday, month]], columns=['Hour', 'Weekday', 'Month'])
-    )[0]
-
-    # Build per-cluster predictions
-    predictions = []
-    for cluster_id, zone_name in cluster_labels.items():
-        center_lat = kmeans.cluster_centers_[cluster_id][0]
-        center_lon = kmeans.cluster_centers_[cluster_id][1]
-
-        match = share_table[
-            (share_table['Hour']    == hour) &
-            (share_table['Weekday'] == weekday) &
-            (share_table['cluster'] == cluster_id)
+        # 6. Determine Surge Level
+        surge_row = self.surge_lookup[
+            (self.surge_lookup['Hour'] == hour) & 
+            (self.surge_lookup['Weekday'] == weekday)
         ]
-        share         = float(match['share'].values[0]) if len(match) else 0.2
-        cluster_rides = int(total_predicted * share)
-        dist          = haversine(lat, lon, center_lat, center_lon)
+        total_actual = int(surge_row['total_pickups'].values[0]) if not surge_row.empty else self.avg_demand
+        
+        surge_val = round(min(max(total_actual / self.avg_demand, 1.0), 2.5), 1)
+        
+        if   surge_val >= 2.0: level = "PEAK"
+        elif surge_val >= 1.5: level = "HIGH"
+        elif surge_val >= 1.2: level = "MODERATE"
+        else:                  level = "LOW"
 
-        predictions.append({
-            'hotspot_name': zone_name,
-            'rides':        cluster_rides,
-            'distance_km':  dist
-        })
-
-    pred_df   = pd.DataFrame(predictions)
-    max_rides = pred_df['rides'].max()
-    max_dist  = pred_df['distance_km'].max()
-
-    # Score = 70 % demand, 30 % proximity
-    pred_df['score'] = (
-        (pred_df['rides'] / max_rides) * 0.7 -
-        (pred_df['distance_km'] / max_dist) * 0.3
-    )
-
-    best         = pred_df.sort_values('score', ascending=False).iloc[0]
-    current_zone = pred_df[pred_df['hotspot_name'] == driver_zone].iloc[0]
-
-    # Surge multiplier
-    surge_row    = surge_lookup[
-        (surge_lookup['Hour'] == hour) & (surge_lookup['Weekday'] == weekday)
-    ]
-    total_actual = int(surge_row['total_pickups'].values[0]) if len(surge_row) else avg_demand
-    surge        = round(min(max(total_actual / avg_demand, 1.0), 2.5), 1)
-
-    if   surge >= 2.0: level = "PEAK"
-    elif surge >= 1.5: level = "HIGH"
-    elif surge >= 1.2: level = "MODERATE"
-    else:              level = "LOW"
-
-    # Helper: get cluster centre for a zone name
-    def centre(zone):
-        cid = [k for k, v in cluster_labels.items() if v == zone][0]
-        return (
-            round(float(kmeans.cluster_centers_[cid][0]), 5),
-            round(float(kmeans.cluster_centers_[cid][1]), 5)
-        )
-
-    best_lat, best_lon = centre(best['hotspot_name'])
-
-    return {
-        'driver_lat':    round(lat, 5),
-        'driver_lon':    round(lon, 5),
-        'hour_label':    hour_label,
-        'day_label':     day_label,
-        'your_zone':     driver_zone,
-        'current_rides': int(current_zone['rides']),
-        'best_hotspot':  best['hotspot_name'],
-        'best_lat':      best_lat,
-        'best_lon':      best_lon,
-        'distance_km':   round(float(best['distance_km']), 1),
-        'hotspot_rides': int(best['rides']),
-        'surge':         surge,
-        'level':         level,
-        'all_hotspots':  (
-            pred_df
-            .sort_values('score', ascending=False)
-            [['hotspot_name', 'rides', 'distance_km']]
-            .round({'distance_km': 1})
-            .to_dict(orient='records')
-        )
-    }
+        # Final Response Object
+        return {
+            'status': 'success',
+            'input_location': location_name,
+            'coords': {'lat': lat, 'lon': lon},
+            'your_zone': driver_zone,
+            'current_rides': int(current_zone_data['rides']),
+            'best_hotspot': best['hotspot_name'],
+            'distance_km': round(float(best['distance_km']), 1),
+            'hotspot_rides': int(best['rides']),
+            'surge': surge_val,
+            'level': level
+        }
